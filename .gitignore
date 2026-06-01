@@ -1,0 +1,21 @@
+# Бинарники
+bin/
+
+# Swagger (генерируется через make swagger)
+docs/
+
+# Переменные окружения
+.env
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Операционные системы
+.DS_Store
+Thumbs.db
+
+# Тестовые артефакты
+*.test
+*.out
