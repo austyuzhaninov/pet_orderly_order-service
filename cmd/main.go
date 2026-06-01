@@ -1,14 +1,129 @@
 package main
 
-// Точка входа будет реализована в шаге 4 (delivery слой).
-// Здесь будут:
-//   - инициализация конфигурации (viper)
-//   - подключение к PostgreSQL
-//   - подключение к Kafka
-//   - wire DI — сборка всех зависимостей
-//   - запуск HTTP сервера (Echo)
-//   - запуск Outbox Worker
-//   - запуск Kafka consumer
-//   - graceful shutdown по SIGTERM
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-func main() {}
+	"github.com/austyuzhaninov/pet_orderly_order-service/internal/config"
+	deliveryHTTP "github.com/austyuzhaninov/pet_orderly_order-service/internal/delivery/http"
+	kafkaRepo "github.com/austyuzhaninov/pet_orderly_order-service/internal/repository/kafka"
+	pgRepo "github.com/austyuzhaninov/pet_orderly_order-service/internal/repository/postgres"
+	"github.com/austyuzhaninov/pet_orderly_order-service/internal/usecase"
+	"github.com/labstack/echo/v4"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+	slog.SetDefault(logger)
+
+	if err := run(logger); err != nil {
+		logger.Error("service failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run(logger *slog.Logger) error {
+	// Config
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	logger.Info("starting service", "service", cfg.ServiceName, "port", cfg.HTTPPort)
+
+	ctx := context.Background()
+
+	// PostgreSQL
+	db, err := pgRepo.NewDB(ctx, cfg.PostgresDSN)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
+	}
+	defer db.Close()
+	logger.Info("postgres connected")
+
+	// Repositories
+	orderRepo := pgRepo.NewOrderRepo(db)
+	outboxRepo := pgRepo.NewOutboxRepo(db)
+
+	// Kafka producer
+	producer := kafkaRepo.NewProducer(cfg.KafkaBrokers)
+	defer producer.Close()
+
+	// Use Cases
+	createOrderUC := usecase.NewCreateOrderUseCase(orderRepo, outboxRepo)
+	updateOrderUC := usecase.NewUpdateOrderUseCase(orderRepo)
+	cancelOrderUC := usecase.NewCancelOrderUseCase(orderRepo, outboxRepo)
+	handleInventoryUC := usecase.NewHandleInventoryUseCase(orderRepo, outboxRepo)
+
+	// Worker context — отменяется при shutdown
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+
+	// Outbox Worker
+	outboxWorker := pgRepo.NewOutboxWorker(outboxRepo, producer, logger)
+	go outboxWorker.Run(workerCtx)
+
+	// Kafka Consumer
+	consumer := kafkaRepo.NewConsumer(
+		cfg.KafkaBrokers,
+		cfg.KafkaGroupID,
+		cfg.KafkaConsumerTopics,
+		handleInventoryUC,
+		logger,
+	)
+	defer consumer.Close()
+	go consumer.Run(workerCtx)
+
+	// HTTP Server
+	e := echo.New()
+	e.HideBanner = true
+	e.Use(deliveryHTTP.TraceMiddleware)
+	e.Use(deliveryHTTP.LoggingMiddleware(logger))
+
+	deliveryHTTP.RegisterSystemRoutes(e)
+
+	handler := deliveryHTTP.NewHandler(createOrderUC, updateOrderUC, cancelOrderUC)
+	handler.Register(e)
+
+	// Graceful Shutdown
+	serverErr := make(chan error, 1)
+	go func() {
+		addr := fmt.Sprintf(":%d", cfg.HTTPPort)
+		logger.Info("http server started", "addr", addr)
+		if err := e.Start(addr); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("http server error: %w", err)
+	case sig := <-quit:
+		logger.Info("shutdown signal received", "signal", sig)
+	}
+
+	// Останавливаем воркеры и HTTP сервер
+	workerCancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(ctx, cfg.ShutdownTimeout)
+	defer shutdownCancel()
+
+	if err := e.Shutdown(shutdownCtx); err != nil {
+		logger.Error("http server shutdown error", "error", err)
+	}
+
+	<-time.After(2 * time.Second)
+	logger.Info("service stopped gracefully")
+	return nil
+}
