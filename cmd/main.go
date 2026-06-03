@@ -92,6 +92,9 @@ func run(logger *slog.Logger) error {
 	e.Use(deliveryHTTP.LoggingMiddleware(logger))
 	e.Use(deliveryHTTP.RateLimitMiddleware(float64(cfg.RateLimitRPS)))
 
+	// Health and Metrics
+	deliveryHTTP.RegisterSystemRoutes(e)
+
 	// Routes
 	httpHandler := deliveryHTTP.NewHandler(
 		createOrderUC,
