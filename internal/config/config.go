@@ -17,18 +17,17 @@ type Config struct {
 
 	PostgresDSN string `mapstructure:"POSTGRES_DSN"`
 
-	KafkaBrokers        []string `mapstructure:"KAFKA_BROKERS"`
-	KafkaGroupID        string   `mapstructure:"KAFKA_GROUP_ID"`
-	KafkaConsumerTopics []string `mapstructure:"KAFKA_CONSUMER_TOPICS"`
+	KafkaBrokers        []string
+	KafkaGroupID        string
+	KafkaConsumerTopics []string
 
-	JaegerEndpoint string `mapstructure:"JAEGER_ENDPOINT"`
+	JaegerEndpoint string
 
-	RateLimitRPS    float64       `mapstructure:"RATE_LIMIT_RPS"`
-	ShutdownTimeout time.Duration `mapstructure:"SHUTDOWN_TIMEOUT"`
+	RateLimitRPS    float64
+	ShutdownTimeout time.Duration
 }
 
 // Load читает конфигурацию из переменных окружения.
-// Viper автоматически подхватывает все ENV переменные.
 func Load() (*Config, error) {
 	viper.AutomaticEnv()
 
@@ -36,8 +35,10 @@ func Load() (*Config, error) {
 	viper.SetDefault("SERVICE_NAME", "order-service")
 	viper.SetDefault("HTTP_PORT", 8080)
 	viper.SetDefault("LOG_LEVEL", "info")
+	viper.SetDefault("KAFKA_BROKERS", "localhost:9094")
 	viper.SetDefault("KAFKA_GROUP_ID", "order-service-group")
-	viper.SetDefault("RATE_LIMIT_RPS", 10)
+	viper.SetDefault("KAFKA_CONSUMER_TOPICS", "inventory.reserved,inventory.failed")
+	viper.SetDefault("RATE_LIMIT_RPS", 10.0)
 	viper.SetDefault("SHUTDOWN_TIMEOUT", "30s")
 
 	cfg := &Config{
@@ -49,14 +50,11 @@ func Load() (*Config, error) {
 		JaegerEndpoint:  viper.GetString("JAEGER_ENDPOINT"),
 		RateLimitRPS:    viper.GetFloat64("RATE_LIMIT_RPS"),
 		ShutdownTimeout: viper.GetDuration("SHUTDOWN_TIMEOUT"),
-	}
 
-	// Kafka brokers и topics приходят как comma-separated строки
-	if brokers := viper.GetString("KAFKA_BROKERS"); brokers != "" {
-		cfg.KafkaBrokers = splitTrim(brokers)
-	}
-	if topics := viper.GetString("KAFKA_CONSUMER_TOPICS"); topics != "" {
-		cfg.KafkaConsumerTopics = splitTrim(topics)
+		// Слайсы читаем вручную — viper не умеет применять дефолты
+		// для []string через Unmarshal когда значение из ENV
+		KafkaBrokers:        splitTrim(viper.GetString("KAFKA_BROKERS")),
+		KafkaConsumerTopics: splitTrim(viper.GetString("KAFKA_CONSUMER_TOPICS")),
 	}
 
 	if err := validate(cfg); err != nil {
@@ -72,6 +70,9 @@ func validate(cfg *Config) error {
 	}
 	if len(cfg.KafkaBrokers) == 0 {
 		return fmt.Errorf("KAFKA_BROKERS is required")
+	}
+	if len(cfg.KafkaConsumerTopics) == 0 {
+		return fmt.Errorf("KAFKA_CONSUMER_TOPICS is required")
 	}
 	return nil
 }
