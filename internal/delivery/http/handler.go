@@ -14,17 +14,15 @@ import (
 // Зависит только от usecase — не знает о repository.
 type Handler struct {
 	createOrder *usecase.CreateOrderUseCase
+	getOrder    *usecase.GetOrderUseCase
 	updateOrder *usecase.UpdateOrderUseCase
 	cancelOrder *usecase.CancelOrderUseCase
 }
 
-func NewHandler(
-	createOrder *usecase.CreateOrderUseCase,
-	updateOrder *usecase.UpdateOrderUseCase,
-	cancelOrder *usecase.CancelOrderUseCase,
-) *Handler {
+func NewHandler(createOrder *usecase.CreateOrderUseCase, getOrder *usecase.GetOrderUseCase, updateOrder *usecase.UpdateOrderUseCase, cancelOrder *usecase.CancelOrderUseCase) *Handler {
 	return &Handler{
 		createOrder: createOrder,
+		getOrder:    getOrder,
 		updateOrder: updateOrder,
 		cancelOrder: cancelOrder,
 	}
